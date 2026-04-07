@@ -169,12 +169,14 @@ TP: {tp}
 
 # ===== START =====
 if __name__ == "__main__":
-    # Start Flask server
+    print("STARTING BOT...")
+
+    # Start Flask (for Render)
     threading.Thread(target=run_server).start()
 
-    # Start bot in separate thread
+    # Start trading bot
     threading.Thread(target=run_bot).start()
 
-    # Keep main thread alive
+    # Keep app alive
     while True:
         time.sleep(60)
