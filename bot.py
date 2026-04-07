@@ -1,10 +1,11 @@
 import requests
 import pandas as pd
 import time
+import os
 
-OANDA_API = "ecf88b39a29b09f99c60c5a91d6ff12d-cf0972461303e57ee09cb17d088f363c"
-TOKEN = "8607725356:AAFZBbYV583Y21mooLmkYvoWy8iyZzuOUyQ"
-CHAT_ID = "8607725356"
+OANDA_API = os.getenv("OANDA_API")
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 last_signal = None
 
