@@ -21,9 +21,10 @@ def get_data():
     r = requests.get(url, headers=headers, params=params)
     data = r.json()
 
+    print("API RESPONSE:", data)  # 👈 ADD THIS
+
     prices = [float(c["mid"]["c"]) for c in data["candles"]]
-    df = pd.DataFrame(prices, columns=["close"])
-    return df
+    return pd.DataFrame(prices, columns=["close"])
 
 while True:
     df = get_data()
