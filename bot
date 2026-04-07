@@ -2,9 +2,9 @@ import requests
 import pandas as pd
 import time
 
-OANDA_API = "YOUR_NEW_API_KEY"
-TOKEN = "YOUR_TELEGRAM_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+OANDA_API = "ecf88b39a29b09f99c60c5a91d6ff12d-cf0972461303e57ee09cb17d088f363c"
+TOKEN = "8607725356:AAFZBbYV583Y21mooLmkYvoWy8iyZzuOUyQ"
+CHAT_ID = "8607725356"
 
 last_signal = None
 
