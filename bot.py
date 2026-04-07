@@ -169,5 +169,12 @@ TP: {tp}
 
 # ===== START =====
 if __name__ == "__main__":
+    # Start Flask server
     threading.Thread(target=run_server).start()
-    run_bot()
+
+    # Start bot in separate thread
+    threading.Thread(target=run_bot).start()
+
+    # Keep main thread alive
+    while True:
+        time.sleep(60)
