@@ -35,13 +35,25 @@ def get_data():
     r = requests.get(url, headers=headers, params=params)
     data = r.json()
 
-    print("API RESPONSE:", data)  # 👈 ADD THIS
+    print("API RESPONSE:", data)
+
+    if "candles" not in data:
+        print("ERROR:", data)
+        return None
 
     prices = [float(c["mid"]["c"]) for c in data["candles"]]
     return pd.DataFrame(prices, columns=["close"])
 
+# === START SERVER FIRST ===
+threading.Thread(target=run_server).start()
+
+# === THEN RUN BOT LOOP ===
 while True:
     df = get_data()
+
+    if df is None:
+        time.sleep(60)
+        continue
 
     df['ema9'] = df['close'].ewm(span=9).mean()
     df['ema20'] = df['close'].ewm(span=20).mean()
@@ -59,6 +71,7 @@ while True:
         send(f"{current_signal} XAUUSD")
         last_signal = current_signal
 
+    print("Bot running...")  # debug
     time.sleep(60)
 
 threading.Thread(target=run_server).start()
