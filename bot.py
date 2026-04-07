@@ -5,10 +5,9 @@ import requests
 import pandas as pd
 import time
 import os
-from datetime import datetime
-import pytz
+from datetime import datetime, timedelta
 
-# ===== FLASK SERVER =====
+# ===== FLASK SERVER (FOR RENDER) =====
 app = Flask(__name__)
 
 @app.route('/')
@@ -36,12 +35,10 @@ def send(msg):
 
 # ===== TIME FILTER (SGT) =====
 def is_trading_time():
-    tz = pytz.timezone("Asia/Singapore")
-    now = datetime.now(tz)
-
+    now = datetime.utcnow() + timedelta(hours=8)  # SGT
     return 15 <= now.hour < 21  # 3PM–9PM
 
-# ===== DATA =====
+# ===== GET DATA =====
 def get_data():
     try:
         url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
@@ -55,9 +52,15 @@ def get_data():
             print("API ERROR:", data)
             return None
 
-        prices = [float(c["mid"]["c"]) for c in data["candles"]]
-        df = pd.DataFrame(prices, columns=["close"])
-        return df
+        rows = []
+        for c in data["candles"]:
+            rows.append({
+                "close": float(c["mid"]["c"]),
+                "high": float(c["mid"]["h"]),
+                "low": float(c["mid"]["l"])
+            })
+
+        return pd.DataFrame(rows)
 
     except Exception as e:
         print("Data Error:", e)
@@ -103,24 +106,28 @@ def get_signal(df):
 
     return None
 
-# ===== SL/TP =====
+# ===== SL / TP =====
 def calculate_sl_tp(df, signal):
     latest = df.iloc[-1]
     entry = latest['close']
 
     lookback = 10
-    recent_low = df['close'].rolling(lookback).min().iloc[-1]
-    recent_high = df['close'].rolling(lookback).max().iloc[-1]
+    buffer = 0.5  # important for gold
+
+    recent_low = df['low'].rolling(lookback).min().iloc[-1]
+    recent_high = df['high'].rolling(lookback).max().iloc[-1]
 
     if signal == "BUY":
-        sl = recent_low
-        tp = entry + (entry - sl) * 1.5
+        sl = recent_low - buffer
+        risk = entry - sl
+        tp = entry + (risk * 1.5)
 
     else:
-        sl = recent_high
-        tp = entry - (sl - entry) * 1.5
+        sl = recent_high + buffer
+        risk = sl - entry
+        tp = entry - (risk * 1.5)
 
-    return round(entry,2), round(sl,2), round(tp,2)
+    return round(entry, 2), round(sl, 2), round(tp, 2)
 
 # ===== MAIN BOT =====
 def run_bot():
