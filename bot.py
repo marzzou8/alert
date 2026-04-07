@@ -1,3 +1,15 @@
+from flask import Flask
+import threading
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running"
+
+def run_server():
+    app.run(host='0.0.0.0', port=10000)
+    
 import requests
 import pandas as pd
 import time
@@ -46,3 +58,5 @@ while True:
         last_signal = current_signal
 
     time.sleep(60)
+
+threading.Thread(target=run_server).start()
