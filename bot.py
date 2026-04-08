@@ -37,7 +37,7 @@ def get_data():
     try:
         url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
         headers = {"Authorization": f"Bearer {OANDA_API}"}
-        params = {"granularity": "M1", "count": 50}
+        params = {"granularity": "M1", "count": 100}
 
         r = requests.get(url, headers=headers, params=params)
         data = r.json()
@@ -46,12 +46,83 @@ def get_data():
             print("API ERROR:", data)
             return None
 
-        prices = [float(c["mid"]["c"]) for c in data["candles"]]
-        return pd.DataFrame(prices, columns=["close"])
+        rows = []
+        for c in data["candles"]:
+            rows.append({
+                "close": float(c["mid"]["c"]),
+                "high": float(c["mid"]["h"]),
+                "low": float(c["mid"]["l"])
+            })
+
+        return pd.DataFrame(rows)
 
     except Exception as e:
         print("Data Error:", e)
         return None
+
+# ===== INDICATORS =====
+def add_indicators(df):
+    df['ema9'] = df['close'].ewm(span=9).mean()
+    df['ema20'] = df['close'].ewm(span=20).mean()
+
+    # RSI
+    delta = df['close'].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+
+    # Bollinger
+    df['ma'] = df['close'].rolling(20).mean()
+    df['std'] = df['close'].rolling(20).std()
+    df['upper'] = df['ma'] + 2 * df['std']
+    df['lower'] = df['ma'] - 2 * df['std']
+
+    return df
+
+# ===== SIGNAL (BALANCED VERSION) =====
+def get_signal(df):
+    prev = df.iloc[-2]
+    curr = df.iloc[-1]
+
+    # BUY (trend + momentum)
+    if (curr['ema9'] > curr['ema20'] and
+        curr['rsi'] > 50 and
+        prev['close'] <= prev['ma'] and
+        curr['close'] > curr['ma']):
+        return "BUY"
+
+    # SELL
+    if (curr['ema9'] < curr['ema20'] and
+        curr['rsi'] < 50 and
+        prev['close'] >= prev['ma'] and
+        curr['close'] < curr['ma']):
+        return "SELL"
+
+    return None
+
+# ===== SL / TP =====
+def calculate_sl_tp(df, signal):
+    entry = df['close'].iloc[-1]
+
+    lookback = 10
+    buffer = 0.5
+
+    recent_low = df['low'].rolling(lookback).min().iloc[-1]
+    recent_high = df['high'].rolling(lookback).max().iloc[-1]
+
+    if signal == "BUY":
+        sl = recent_low - buffer
+        risk = entry - sl
+        tp = entry + (risk * 1.5)
+    else:
+        sl = recent_high + buffer
+        risk = sl - entry
+        tp = entry - (risk * 1.5)
+
+    return round(entry, 2), round(sl, 2), round(tp, 2)
 
 # ===== BOT LOOP =====
 def run_bot():
@@ -67,19 +138,25 @@ def run_bot():
             time.sleep(60)
             continue
 
-        # SIMPLE LOGIC (FOR TESTING)
-        ema9 = df['close'].ewm(span=9).mean()
-        ema20 = df['close'].ewm(span=20).mean()
+        df = add_indicators(df)
 
-        if ema9.iloc[-1] > ema20.iloc[-1]:
-            signal = "BUY"
-        else:
-            signal = "SELL"
+        signal = get_signal(df)
 
         print("Signal:", signal)
 
-        if signal != last_signal:
-            send(f"{signal} XAUUSD")
+        if signal and signal != last_signal:
+            entry, sl, tp = calculate_sl_tp(df, signal)
+
+            message = f"""
+{signal} XAUUSD
+Entry: {entry}
+SL: {sl}
+TP: {tp}
+"""
+
+            print("Sending:", message)
+            send(message)
+
             last_signal = signal
 
         time.sleep(60)
