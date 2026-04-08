@@ -1,45 +1,11 @@
-# ===== IMPORTS =====
-from flask import Flask
-import threading
-import requests
-import pandas as pd
-import time
-import os
+# ===== IMPROVED BOT LOOP =====
+import numpy as np
 
-# ===== FLASK SERVER =====
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running"
-
-def run_server():
-    port = int(os.environ.get("PORT", 10000))
-    print(f"Starting Flask on port {port}")
-    app.run(host='0.0.0.0', port=port)
-
-# ===== CONFIG =====
-OANDA_API = os.getenv("OANDA_API")
-TOKEN = os.getenv("TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-last_signal = None
-
-# ===== TELEGRAM =====
-def send(msg):
-    try:
-        print("Sending Telegram:", msg)
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except Exception as e:
-        print("Telegram Error:", e)
-
-# ===== GET DATA =====
 def get_data():
     try:
         url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
         headers = {"Authorization": f"Bearer {OANDA_API}"}
-        params = {"granularity": "M1", "count": 50}
+        params = {"granularity": "M1", "count": 100}  # need more candles for EMAs
 
         r = requests.get(url, headers=headers, params=params)
         data = r.json()
@@ -55,62 +21,107 @@ def get_data():
         print("Data Error:", e)
         return None
 
-# ===== BOT LOOP =====
+def calculate_indicators(df):
+    """Return latest values of all indicators"""
+    close = df['close']
+    
+    # EMAs
+    ema9 = close.ewm(span=9, adjust=False).mean()
+    ema20 = close.ewm(span=20, adjust=False).mean()
+    ema200 = close.ewm(span=200, adjust=False).mean()
+    
+    # RSI (14)
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    # Bollinger Bands (20,2)
+    bb_middle = close.rolling(window=20).mean()
+    bb_std = close.rolling(window=20).std()
+    bb_upper = bb_middle + 2 * bb_std
+    bb_lower = bb_middle - 2 * bb_std
+    
+    return {
+        'ema9': ema9.iloc[-1],
+        'ema20': ema20.iloc[-1],
+        'ema200': ema200.iloc[-1],
+        'rsi': rsi.iloc[-1],
+        'close': close.iloc[-1],
+        'bb_lower': bb_lower.iloc[-1],
+        'bb_upper': bb_upper.iloc[-1],
+        'prev_ema9': ema9.iloc[-2],
+        'prev_ema20': ema20.iloc[-2]
+    }
+
 def run_bot():
     global last_signal
-
-    print(">>> BOT LOOP STARTED <<<")
-
-    # 🔥 TEST MESSAGE (you MUST receive this)
-    send("✅ BOT STARTED SUCCESSFULLY")
-
+    send("✅ Gold Scalping Bot STARTED (EMA+RSI+BB Strategy)")
+    
+    # Cooldown: don't send another signal for 5 minutes
+    last_signal_time = 0
+    
     while True:
         try:
-            print("Bot running...")
-
             df = get_data()
-            if df is None:
-                time.sleep(60)
+            if df is None or len(df) < 200:
+                time.sleep(30)
                 continue
-
-            ema9 = df['close'].ewm(span=9).mean()
-            ema20 = df['close'].ewm(span=20).mean()
-
-            if ema9.iloc[-1] > ema20.iloc[-1]:
+            
+            ind = calculate_indicators(df)
+            
+            # --- Crossover detection ---
+            ema9_above_20 = ind['ema9'] > ind['ema20']
+            prev_ema9_above_20 = ind['prev_ema9'] > ind['prev_ema20']
+            
+            bullish_crossover = (not prev_ema9_above_20) and ema9_above_20
+            bearish_crossover = prev_ema9_above_20 and (not ema9_above_20)
+            
+            # --- Trend filter ---
+            above_200ema = ind['close'] > ind['ema200']
+            below_200ema = ind['close'] < ind['ema200']
+            
+            # --- RSI extremes ---
+            oversold = ind['rsi'] < 30
+            overbought = ind['rsi'] > 70
+            
+            # --- Bollinger Band touch ---
+            touch_lower = ind['close'] <= ind['bb_lower']
+            touch_upper = ind['close'] >= ind['bb_upper']
+            
+            # --- Final signal logic (matching our backtest) ---
+            buy_signal = (bullish_crossover and above_200ema and oversold and touch_lower)
+            sell_signal = (bearish_crossover and below_200ema and overbought and touch_upper)
+            
+            # Optional: remove BB touch for more signals (but lower quality)
+            # buy_signal = (bullish_crossover and above_200ema and oversold)
+            # sell_signal = (bearish_crossover and below_200ema and overbought)
+            
+            current_time = time.time()
+            signal = None
+            if buy_signal and (current_time - last_signal_time > 300):  # 5 min cooldown
                 signal = "BUY"
-            else:
+                last_signal_time = current_time
+            elif sell_signal and (current_time - last_signal_time > 300):
                 signal = "SELL"
-
-            print("Signal:", signal)
-
-            # Only send if changed
-            if signal != last_signal:
-                send(f"{signal} XAUUSD")
+                last_signal_time = current_time
+            
+            if signal and signal != last_signal:
+                msg = (f"{signal} XAUUSD\n"
+                       f"Price: {ind['close']:.2f}\n"
+                       f"EMA9: {ind['ema9']:.2f}  EMA20: {ind['ema20']:.2f}\n"
+                       f"200 EMA: {ind['ema200']:.2f}\n"
+                       f"RSI: {ind['rsi']:.1f}\n"
+                       f"BB: lower={ind['bb_lower']:.2f} upper={ind['bb_upper']:.2f}")
+                send(msg)
                 last_signal = signal
-
+            
+            print(f"Checked at {time.ctime()}: EMA9/20 cross={bullish_crossover or bearish_crossover}, RSI={ind['rsi']:.1f}")
+            
         except Exception as e:
             print("BOT ERROR:", e)
-
-        time.sleep(60)
-
-# ===== SAFE WRAPPER =====
-def safe_run_bot():
-    try:
-        run_bot()
-    except Exception as e:
-        print("BOT CRASHED:", e)
-
-# ===== START =====
-if __name__ == "__main__":
-    print("=== STARTING BOT SYSTEM ===")
-
-    # Start Flask
-    threading.Thread(target=run_server, daemon=True).start()
-
-    # Start Bot
-    threading.Thread(target=safe_run_bot, daemon=True).start()
-
-    # Keep alive
-    while True:
-        print("MAIN THREAD ALIVE")
-        time.sleep(60)
+        
+        time.sleep(60)  # check every minute
