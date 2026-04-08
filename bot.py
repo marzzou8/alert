@@ -15,6 +15,7 @@ def home():
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
+    print(f"Starting Flask on port {port}")
     app.run(host='0.0.0.0', port=port)
 
 # ===== CONFIG =====
@@ -27,6 +28,7 @@ last_signal = None
 # ===== TELEGRAM =====
 def send(msg):
     try:
+        print("Sending Telegram:", msg)
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
     except Exception as e:
@@ -37,7 +39,7 @@ def get_data():
     try:
         url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
         headers = {"Authorization": f"Bearer {OANDA_API}"}
-        params = {"granularity": "M1", "count": 100}
+        params = {"granularity": "M1", "count": 50}
 
         r = requests.get(url, headers=headers, params=params)
         data = r.json()
@@ -46,127 +48,69 @@ def get_data():
             print("API ERROR:", data)
             return None
 
-        rows = []
-        for c in data["candles"]:
-            rows.append({
-                "close": float(c["mid"]["c"]),
-                "high": float(c["mid"]["h"]),
-                "low": float(c["mid"]["l"])
-            })
-
-        return pd.DataFrame(rows)
+        prices = [float(c["mid"]["c"]) for c in data["candles"]]
+        return pd.DataFrame(prices, columns=["close"])
 
     except Exception as e:
         print("Data Error:", e)
         return None
 
-# ===== INDICATORS =====
-def add_indicators(df):
-    df['ema9'] = df['close'].ewm(span=9).mean()
-    df['ema20'] = df['close'].ewm(span=20).mean()
-
-    # RSI
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    rs = avg_gain / avg_loss
-    df['rsi'] = 100 - (100 / (1 + rs))
-
-    # Bollinger
-    df['ma'] = df['close'].rolling(20).mean()
-    df['std'] = df['close'].rolling(20).std()
-    df['upper'] = df['ma'] + 2 * df['std']
-    df['lower'] = df['ma'] - 2 * df['std']
-
-    return df
-
-# ===== SIGNAL (BALANCED VERSION) =====
-def get_signal(df):
-    prev = df.iloc[-2]
-    curr = df.iloc[-1]
-
-    # BUY (trend + momentum)
-    if (curr['ema9'] > curr['ema20'] and
-        curr['rsi'] > 50 and
-        prev['close'] <= prev['ma'] and
-        curr['close'] > curr['ma']):
-        return "BUY"
-
-    # SELL
-    if (curr['ema9'] < curr['ema20'] and
-        curr['rsi'] < 50 and
-        prev['close'] >= prev['ma'] and
-        curr['close'] < curr['ma']):
-        return "SELL"
-
-    return None
-
-# ===== SL / TP =====
-def calculate_sl_tp(df, signal):
-    entry = df['close'].iloc[-1]
-
-    lookback = 10
-    buffer = 0.5
-
-    recent_low = df['low'].rolling(lookback).min().iloc[-1]
-    recent_high = df['high'].rolling(lookback).max().iloc[-1]
-
-    if signal == "BUY":
-        sl = recent_low - buffer
-        risk = entry - sl
-        tp = entry + (risk * 1.5)
-    else:
-        sl = recent_high + buffer
-        risk = sl - entry
-        tp = entry - (risk * 1.5)
-
-    return round(entry, 2), round(sl, 2), round(tp, 2)
-
 # ===== BOT LOOP =====
 def run_bot():
     global last_signal
 
-    print("BOT LOOP STARTED")
+    print(">>> BOT LOOP STARTED <<<")
+
+    # 🔥 TEST MESSAGE (you MUST receive this)
+    send("✅ BOT STARTED SUCCESSFULLY")
 
     while True:
-        print("Bot running...")
+        try:
+            print("Bot running...")
 
-        df = get_data()
-        if df is None:
-            time.sleep(60)
-            continue
+            df = get_data()
+            if df is None:
+                time.sleep(60)
+                continue
 
-        df = add_indicators(df)
+            ema9 = df['close'].ewm(span=9).mean()
+            ema20 = df['close'].ewm(span=20).mean()
 
-        signal = get_signal(df)
+            if ema9.iloc[-1] > ema20.iloc[-1]:
+                signal = "BUY"
+            else:
+                signal = "SELL"
 
-        print("Signal:", signal)
+            print("Signal:", signal)
 
-        if signal and signal != last_signal:
-            entry, sl, tp = calculate_sl_tp(df, signal)
+            # Only send if changed
+            if signal != last_signal:
+                send(f"{signal} XAUUSD")
+                last_signal = signal
 
-            message = f"""
-{signal} XAUUSD
-Entry: {entry}
-SL: {sl}
-TP: {tp}
-"""
-
-            print("Sending:", message)
-            send(message)
-
-            last_signal = signal
+        except Exception as e:
+            print("BOT ERROR:", e)
 
         time.sleep(60)
 
+# ===== SAFE WRAPPER =====
+def safe_run_bot():
+    try:
+        run_bot()
+    except Exception as e:
+        print("BOT CRASHED:", e)
+
 # ===== START =====
 if __name__ == "__main__":
-    print("STARTING BOT...")
+    print("=== STARTING BOT SYSTEM ===")
 
-    threading.Thread(target=run_server).start()
-    threading.Thread(target=run_bot).start()
+    # Start Flask
+    threading.Thread(target=run_server, daemon=True).start()
 
+    # Start Bot
+    threading.Thread(target=safe_run_bot, daemon=True).start()
+
+    # Keep alive
     while True:
+        print("MAIN THREAD ALIVE")
         time.sleep(60)
