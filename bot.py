@@ -1,127 +1,171 @@
-# ===== IMPROVED BOT LOOP =====
-import numpy as np
+# ===== IMPORTS =====
+from flask import Flask
+import threading
+import requests
+import pandas as pd
+import time
+import os
 
-def get_data():
+# ===== FLASK =====
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot running"
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# ===== CONFIG =====
+OANDA_API = os.getenv("OANDA_API")
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+last_signal_time = 0
+
+# ===== TELEGRAM =====
+def send(msg):
     try:
-        url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
-        headers = {"Authorization": f"Bearer {OANDA_API}"}
-        params = {"granularity": "M1", "count": 100}  # need more candles for EMAs
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    except:
+        pass
 
-        r = requests.get(url, headers=headers, params=params)
-        data = r.json()
+# ===== DATA =====
+def get_data():
+    url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
+    headers = {"Authorization": f"Bearer {OANDA_API}"}
+    params = {"granularity": "M1", "count": 150}
 
-        if "candles" not in data:
-            print("API ERROR:", data)
-            return None
+    r = requests.get(url, headers=headers, params=params)
+    data = r.json()
 
-        prices = [float(c["mid"]["c"]) for c in data["candles"]]
-        return pd.DataFrame(prices, columns=["close"])
-
-    except Exception as e:
-        print("Data Error:", e)
+    if "candles" not in data:
+        print("API ERROR:", data)
         return None
 
-def calculate_indicators(df):
-    """Return latest values of all indicators"""
-    close = df['close']
-    
-    # EMAs
-    ema9 = close.ewm(span=9, adjust=False).mean()
-    ema20 = close.ewm(span=20, adjust=False).mean()
-    ema200 = close.ewm(span=200, adjust=False).mean()
-    
-    # RSI (14)
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    
-    # Bollinger Bands (20,2)
-    bb_middle = close.rolling(window=20).mean()
-    bb_std = close.rolling(window=20).std()
-    bb_upper = bb_middle + 2 * bb_std
-    bb_lower = bb_middle - 2 * bb_std
-    
-    return {
-        'ema9': ema9.iloc[-1],
-        'ema20': ema20.iloc[-1],
-        'ema200': ema200.iloc[-1],
-        'rsi': rsi.iloc[-1],
-        'close': close.iloc[-1],
-        'bb_lower': bb_lower.iloc[-1],
-        'bb_upper': bb_upper.iloc[-1],
-        'prev_ema9': ema9.iloc[-2],
-        'prev_ema20': ema20.iloc[-2]
-    }
+    rows = []
+    for c in data["candles"]:
+        rows.append({
+            "close": float(c["mid"]["c"]),
+            "high": float(c["mid"]["h"]),
+            "low": float(c["mid"]["l"])
+        })
 
+    return pd.DataFrame(rows)
+
+# ===== INDICATORS =====
+def add_indicators(df):
+    df['ema9'] = df['close'].ewm(span=9).mean()
+    df['ema20'] = df['close'].ewm(span=20).mean()
+
+    # RSI
+    delta = df['close'].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+
+    return df
+
+# ===== MARKET FILTER =====
+def trending(df):
+    # Avoid sideways market
+    return abs(df['ema9'].iloc[-1] - df['ema20'].iloc[-1]) > 0.3
+
+# ===== SIGNAL =====
+def get_signal(df):
+    prev = df.iloc[-2]
+    curr = df.iloc[-1]
+
+    # BUY (trend + pullback)
+    if (curr['ema9'] > curr['ema20'] and
+        prev['close'] < prev['ema9'] and
+        curr['close'] > curr['ema9'] and
+        curr['rsi'] > 50):
+        return "BUY"
+
+    # SELL
+    if (curr['ema9'] < curr['ema20'] and
+        prev['close'] > prev['ema9'] and
+        curr['close'] < curr['ema9'] and
+        curr['rsi'] < 50):
+        return "SELL"
+
+    return None
+
+# ===== SL / TP =====
+def calculate_sl_tp(df, signal):
+    entry = df['close'].iloc[-1]
+
+    lookback = 10
+    buffer = 0.5
+
+    low = df['low'].rolling(lookback).min().iloc[-1]
+    high = df['high'].rolling(lookback).max().iloc[-1]
+
+    if signal == "BUY":
+        sl = low - buffer
+        risk = entry - sl
+        tp = entry + (risk * 1.5)
+    else:
+        sl = high + buffer
+        risk = sl - entry
+        tp = entry - (risk * 1.5)
+
+    return round(entry,2), round(sl,2), round(tp,2)
+
+# ===== BOT =====
 def run_bot():
-    global last_signal
-    send("✅ Gold Scalping Bot STARTED (EMA+RSI+BB Strategy)")
-    
-    # Cooldown: don't send another signal for 5 minutes
-    last_signal_time = 0
-    
+    global last_signal_time
+
+    send("🚀 Prop Bot Started")
+
     while True:
         try:
             df = get_data()
-            if df is None or len(df) < 200:
-                time.sleep(30)
+            if df is None:
+                time.sleep(60)
                 continue
-            
-            ind = calculate_indicators(df)
-            
-            # --- Crossover detection ---
-            ema9_above_20 = ind['ema9'] > ind['ema20']
-            prev_ema9_above_20 = ind['prev_ema9'] > ind['prev_ema20']
-            
-            bullish_crossover = (not prev_ema9_above_20) and ema9_above_20
-            bearish_crossover = prev_ema9_above_20 and (not ema9_above_20)
-            
-            # --- Trend filter ---
-            above_200ema = ind['close'] > ind['ema200']
-            below_200ema = ind['close'] < ind['ema200']
-            
-            # --- RSI extremes ---
-            oversold = ind['rsi'] < 30
-            overbought = ind['rsi'] > 70
-            
-            # --- Bollinger Band touch ---
-            touch_lower = ind['close'] <= ind['bb_lower']
-            touch_upper = ind['close'] >= ind['bb_upper']
-            
-            # --- Final signal logic (matching our backtest) ---
-            buy_signal = (bullish_crossover and above_200ema and oversold and touch_lower)
-            sell_signal = (bearish_crossover and below_200ema and overbought and touch_upper)
-            
-            # Optional: remove BB touch for more signals (but lower quality)
-            # buy_signal = (bullish_crossover and above_200ema and oversold)
-            # sell_signal = (bearish_crossover and below_200ema and overbought)
-            
-            current_time = time.time()
-            signal = None
-            if buy_signal and (current_time - last_signal_time > 300):  # 5 min cooldown
-                signal = "BUY"
-                last_signal_time = current_time
-            elif sell_signal and (current_time - last_signal_time > 300):
-                signal = "SELL"
-                last_signal_time = current_time
-            
-            if signal and signal != last_signal:
-                msg = (f"{signal} XAUUSD\n"
-                       f"Price: {ind['close']:.2f}\n"
-                       f"EMA9: {ind['ema9']:.2f}  EMA20: {ind['ema20']:.2f}\n"
-                       f"200 EMA: {ind['ema200']:.2f}\n"
-                       f"RSI: {ind['rsi']:.1f}\n"
-                       f"BB: lower={ind['bb_lower']:.2f} upper={ind['bb_upper']:.2f}")
+
+            df = add_indicators(df)
+
+            if not trending(df):
+                print("Sideways market - skip")
+                time.sleep(60)
+                continue
+
+            signal = get_signal(df)
+
+            now = time.time()
+
+            if signal and (now - last_signal_time > 300):
+                entry, sl, tp = calculate_sl_tp(df, signal)
+
+                msg = f"""
+{signal} XAUUSD
+Entry: {entry}
+SL: {sl}
+TP: {tp}
+"""
+
                 send(msg)
-                last_signal = signal
-            
-            print(f"Checked at {time.ctime()}: EMA9/20 cross={bullish_crossover or bearish_crossover}, RSI={ind['rsi']:.1f}")
-            
+                last_signal_time = now
+
+                print("Trade sent:", msg)
+
         except Exception as e:
-            print("BOT ERROR:", e)
-        
-        time.sleep(60)  # check every minute
+            print("ERROR:", e)
+
+        time.sleep(60)
+
+# ===== START =====
+if __name__ == "__main__":
+    threading.Thread(target=run_server, daemon=True).start()
+    threading.Thread(target=run_bot, daemon=True).start()
+
+    while True:
+        time.sleep(60)
