@@ -164,7 +164,7 @@ def run_bot():
                     }
 
                     send(f"""
-🚀 {signal} XAUUSD
+🚀 CG {signal} XAUUSD
 Entry: {entry}
 SL: {sl}
 TP: {tp}
