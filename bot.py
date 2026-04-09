@@ -33,15 +33,28 @@ def send(msg):
     except Exception as e:
         print("Telegram Error:", e)
 
-# ===== GET DATA =====
+# ===== GET DATA (SAFE VERSION) =====
 def get_data():
     try:
         url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
         headers = {"Authorization": f"Bearer {OANDA_API}"}
         params = {"granularity": "M1", "count": 100}
 
-        r = requests.get(url, headers=headers, params=params)
-        data = r.json()
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+
+        if r.status_code != 200:
+            print("HTTP ERROR:", r.status_code, r.text)
+            return None
+
+        if not r.text:
+            print("EMPTY RESPONSE")
+            return None
+
+        try:
+            data = r.json()
+        except Exception as e:
+            print("JSON ERROR:", e, r.text)
+            return None
 
         if "candles" not in data:
             print("API ERROR:", data)
@@ -58,7 +71,7 @@ def get_data():
         return pd.DataFrame(rows)
 
     except Exception as e:
-        print("Data Error:", e)
+        print("REQUEST ERROR:", e)
         return None
 
 # ===== INDICATORS =====
@@ -72,13 +85,11 @@ def get_signal(df):
     prev = df.iloc[-2]
     curr = df.iloc[-1]
 
-    # BUY
     if (curr['ema9'] > curr['ema20'] and
         prev['close'] < prev['ema9'] and
         curr['close'] > curr['ema9']):
         return "BUY"
 
-    # SELL
     if (curr['ema9'] < curr['ema20'] and
         prev['close'] > prev['ema9'] and
         curr['close'] < curr['ema9']):
@@ -147,7 +158,7 @@ def run_bot():
             # Monitor existing trade
             monitor_trade(df)
 
-            # Only take new trade if none active
+            # Only open new trade if none active
             if current_trade is None:
                 signal = get_signal(df)
 
@@ -164,7 +175,7 @@ def run_bot():
                     }
 
                     send(f"""
-🚀 CG {signal} XAUUSD
+🚀 {signal} XAUUSD
 Entry: {entry}
 SL: {sl}
 TP: {tp}
