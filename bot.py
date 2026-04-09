@@ -6,12 +6,12 @@ import pandas as pd
 import time
 import os
 
-# ===== FLASK =====
+# ===== FLASK SERVER =====
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot running"
+    return "Bot is running"
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -22,110 +22,121 @@ OANDA_API = os.getenv("OANDA_API")
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-last_signal_time = 0
+current_trade = None
 
 # ===== TELEGRAM =====
 def send(msg):
     try:
+        print("Sending:", msg)
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except:
-        pass
+    except Exception as e:
+        print("Telegram Error:", e)
 
-# ===== DATA =====
+# ===== GET DATA =====
 def get_data():
-    url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
-    headers = {"Authorization": f"Bearer {OANDA_API}"}
-    params = {"granularity": "M1", "count": 150}
+    try:
+        url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
+        headers = {"Authorization": f"Bearer {OANDA_API}"}
+        params = {"granularity": "M1", "count": 100}
 
-    r = requests.get(url, headers=headers, params=params)
-    data = r.json()
+        r = requests.get(url, headers=headers, params=params)
+        data = r.json()
 
-    if "candles" not in data:
-        print("API ERROR:", data)
+        if "candles" not in data:
+            print("API ERROR:", data)
+            return None
+
+        rows = []
+        for c in data["candles"]:
+            rows.append({
+                "close": float(c["mid"]["c"]),
+                "high": float(c["mid"]["h"]),
+                "low": float(c["mid"]["l"])
+            })
+
+        return pd.DataFrame(rows)
+
+    except Exception as e:
+        print("Data Error:", e)
         return None
-
-    rows = []
-    for c in data["candles"]:
-        rows.append({
-            "close": float(c["mid"]["c"]),
-            "high": float(c["mid"]["h"]),
-            "low": float(c["mid"]["l"])
-        })
-
-    return pd.DataFrame(rows)
 
 # ===== INDICATORS =====
 def add_indicators(df):
     df['ema9'] = df['close'].ewm(span=9).mean()
     df['ema20'] = df['close'].ewm(span=20).mean()
-
-    # RSI
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    rs = avg_gain / avg_loss
-    df['rsi'] = 100 - (100 / (1 + rs))
-
     return df
-
-# ===== MARKET FILTER =====
-def trending(df):
-    # Avoid sideways market
-    return abs(df['ema9'].iloc[-1] - df['ema20'].iloc[-1]) > 0.3
 
 # ===== SIGNAL =====
 def get_signal(df):
     prev = df.iloc[-2]
     curr = df.iloc[-1]
 
-    # BUY (trend + pullback)
+    # BUY
     if (curr['ema9'] > curr['ema20'] and
         prev['close'] < prev['ema9'] and
-        curr['close'] > curr['ema9'] and
-        curr['rsi'] > 50):
+        curr['close'] > curr['ema9']):
         return "BUY"
 
     # SELL
     if (curr['ema9'] < curr['ema20'] and
         prev['close'] > prev['ema9'] and
-        curr['close'] < curr['ema9'] and
-        curr['rsi'] < 50):
+        curr['close'] < curr['ema9']):
         return "SELL"
 
     return None
 
 # ===== SL / TP =====
-def calculate_sl_tp(df, signal):
-    entry = df['close'].iloc[-1]
-
-    lookback = 10
-    buffer = 0.5
-
-    low = df['low'].rolling(lookback).min().iloc[-1]
-    high = df['high'].rolling(lookback).max().iloc[-1]
+def calculate_sl_tp(entry, signal):
+    sl_distance = 10.0
 
     if signal == "BUY":
-        sl = low - buffer
-        risk = entry - sl
-        tp = entry + (risk * 1.5)
+        sl = entry - sl_distance
+        tp = entry + (sl_distance * 1.5)
     else:
-        sl = high + buffer
-        risk = sl - entry
-        tp = entry - (risk * 1.5)
+        sl = entry + sl_distance
+        tp = entry - (sl_distance * 1.5)
 
-    return round(entry,2), round(sl,2), round(tp,2)
+    return round(sl, 2), round(tp, 2)
 
-# ===== BOT =====
+# ===== MONITOR TRADE =====
+def monitor_trade(df):
+    global current_trade
+
+    if current_trade is None:
+        return
+
+    price = df['close'].iloc[-1]
+    entry = current_trade['entry']
+    direction = current_trade['type']
+
+    if direction == "BUY":
+        move = price - entry
+    else:
+        move = entry - price
+
+    print(f"Monitoring trade | Move: {move:.2f}")
+
+    # Move to BE at +3
+    if move >= 3 and not current_trade["be_sent"]:
+        send(f"""
+⚡ MOVE SL TO BE
+{direction} XAUUSD
+Entry: {entry}
+""")
+        current_trade["be_sent"] = True
+
+# ===== MAIN BOT =====
 def run_bot():
-    global last_signal_time
+    global current_trade
 
-    send("🚀 Prop Bot Started")
+    print("BOT STARTED")
+    send("✅ Bot is LIVE")
 
     while True:
         try:
+            print("Bot running...")
+
             df = get_data()
             if df is None:
                 time.sleep(60)
@@ -133,32 +144,34 @@ def run_bot():
 
             df = add_indicators(df)
 
-            if not trending(df):
-                print("Sideways market - skip")
-                time.sleep(60)
-                continue
+            # Monitor existing trade
+            monitor_trade(df)
 
-            signal = get_signal(df)
+            # Only take new trade if none active
+            if current_trade is None:
+                signal = get_signal(df)
 
-            now = time.time()
+                if signal:
+                    entry = df['close'].iloc[-1]
+                    sl, tp = calculate_sl_tp(entry, signal)
 
-            if signal and (now - last_signal_time > 300):
-                entry, sl, tp = calculate_sl_tp(df, signal)
+                    current_trade = {
+                        "type": signal,
+                        "entry": entry,
+                        "sl": sl,
+                        "tp": tp,
+                        "be_sent": False
+                    }
 
-                msg = f"""
-{signal} XAUUSD
+                    send(f"""
+🚀 {signal} XAUUSD
 Entry: {entry}
 SL: {sl}
 TP: {tp}
-"""
-
-                send(msg)
-                last_signal_time = now
-
-                print("Trade sent:", msg)
+""")
 
         except Exception as e:
-            print("ERROR:", e)
+            print("BOT ERROR:", e)
 
         time.sleep(60)
 
