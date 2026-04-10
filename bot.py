@@ -35,45 +35,48 @@ def send(msg):
 
 # ===== GET DATA (SAFE VERSION) =====
 def get_data():
-    try:
-        url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
-        headers = {"Authorization": f"Bearer {OANDA_API}"}
-        params = {"granularity": "M1", "count": 100}
+    url = "https://api-fxpractice.oanda.com/v3/instruments/XAU_USD/candles"
+    headers = {"Authorization": f"Bearer {OANDA_API}"}
+    params = {"granularity": "M1", "count": 100}
 
-        r = requests.get(url, headers=headers, params=params, timeout=10)
-
-        if r.status_code != 200:
-            print("HTTP ERROR:", r.status_code, r.text)
-            return None
-
-        if not r.text:
-            print("EMPTY RESPONSE")
-            return None
-
+    for attempt in range(3):  # retry 3 times
         try:
+            r = requests.get(url, headers=headers, params=params, timeout=10)
+
+            if r.status_code != 200:
+                print(f"HTTP ERROR {r.status_code}, retry {attempt+1}")
+                time.sleep(2)
+                continue
+
+            if not r.text:
+                print("EMPTY RESPONSE, retry")
+                time.sleep(2)
+                continue
+
             data = r.json()
+
+            if "candles" not in data:
+                print("API ERROR:", data)
+                time.sleep(2)
+                continue
+
+            rows = []
+            for c in data["candles"]:
+                rows.append({
+                    "close": float(c["mid"]["c"]),
+                    "high": float(c["mid"]["h"]),
+                    "low": float(c["mid"]["l"])
+                })
+
+            return pd.DataFrame(rows)
+
         except Exception as e:
-            print("JSON ERROR:", e, r.text)
-            return None
+            print("RETRY ERROR:", e)
+            time.sleep(2)
 
-        if "candles" not in data:
-            print("API ERROR:", data)
-            return None
-
-        rows = []
-        for c in data["candles"]:
-            rows.append({
-                "close": float(c["mid"]["c"]),
-                "high": float(c["mid"]["h"]),
-                "low": float(c["mid"]["l"])
-            })
-
-        return pd.DataFrame(rows)
-
-    except Exception as e:
-        print("REQUEST ERROR:", e)
-        return None
-
+    print("FAILED AFTER RETRIES")
+    return None
+    
 # ===== INDICATORS =====
 def add_indicators(df):
     df['ema9'] = df['close'].ewm(span=9).mean()
