@@ -132,7 +132,7 @@ def monitor_trade(df):
     else:
         move = entry - price
 
-    print(f"Monitoring trade | Price: {price} | Move: {move:.2f}")
+    print(f"Monitoring | Price: {price} | Move: {move:.2f}")
 
     # ===== MOVE TO BE =====
     if move >= 3 and not current_trade["be_sent"]:
@@ -142,6 +142,27 @@ def monitor_trade(df):
 Entry: {entry}
 """)
         current_trade["be_sent"] = True
+
+    # ===== AFTER BE ACTIVATED =====
+    if current_trade["be_sent"]:
+        # If price comes back to entry → BE close
+        if direction == "BUY" and price <= entry:
+            send(f"""
+🟡 BREAKEVEN HIT
+BUY XAUUSD
+Entry: {entry}
+""")
+            current_trade = None
+            return
+
+        if direction == "SELL" and price >= entry:
+            send(f"""
+🟡 BREAKEVEN HIT
+SELL XAUUSD
+Entry: {entry}
+""")
+            current_trade = None
+            return
 
     # ===== TP HIT =====
     if direction == "BUY" and price >= tp:
@@ -164,27 +185,28 @@ TP: {tp}
         current_trade = None
         return
 
-    # ===== SL HIT =====
-    if direction == "BUY" and price <= sl:
-        send(f"""
+    # ===== SL HIT (ONLY BEFORE BE) =====
+    if not current_trade["be_sent"]:
+        if direction == "BUY" and price <= sl:
+            send(f"""
 ❌ SL HIT
 BUY XAUUSD
 Entry: {entry}
 SL: {sl}
 """)
-        current_trade = None
-        return
+            current_trade = None
+            return
 
-    if direction == "SELL" and price >= sl:
-        send(f"""
+        if direction == "SELL" and price >= sl:
+            send(f"""
 ❌ SL HIT
 SELL XAUUSD
 Entry: {entry}
 SL: {sl}
 """)
-        current_trade = None
-        return
-        
+            current_trade = None
+            return
+            
 # ===== MAIN BOT =====
 def run_bot():
     global current_trade
