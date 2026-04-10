@@ -122,16 +122,19 @@ def monitor_trade(df):
 
     price = df['close'].iloc[-1]
     entry = current_trade['entry']
+    sl = current_trade['sl']
+    tp = current_trade['tp']
     direction = current_trade['type']
 
+    # ===== MOVE CALC =====
     if direction == "BUY":
         move = price - entry
     else:
         move = entry - price
 
-    print(f"Monitoring trade | Move: {move:.2f}")
+    print(f"Monitoring trade | Price: {price} | Move: {move:.2f}")
 
-    # Move to BE at +3
+    # ===== MOVE TO BE =====
     if move >= 3 and not current_trade["be_sent"]:
         send(f"""
 ⚡ MOVE SL TO BE
@@ -140,6 +143,48 @@ Entry: {entry}
 """)
         current_trade["be_sent"] = True
 
+    # ===== TP HIT =====
+    if direction == "BUY" and price >= tp:
+        send(f"""
+🎯 TP HIT
+BUY XAUUSD
+Entry: {entry}
+TP: {tp}
+""")
+        current_trade = None
+        return
+
+    if direction == "SELL" and price <= tp:
+        send(f"""
+🎯 TP HIT
+SELL XAUUSD
+Entry: {entry}
+TP: {tp}
+""")
+        current_trade = None
+        return
+
+    # ===== SL HIT =====
+    if direction == "BUY" and price <= sl:
+        send(f"""
+❌ SL HIT
+BUY XAUUSD
+Entry: {entry}
+SL: {sl}
+""")
+        current_trade = None
+        return
+
+    if direction == "SELL" and price >= sl:
+        send(f"""
+❌ SL HIT
+SELL XAUUSD
+Entry: {entry}
+SL: {sl}
+""")
+        current_trade = None
+        return
+        
 # ===== MAIN BOT =====
 def run_bot():
     global current_trade
